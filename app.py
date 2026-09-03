@@ -203,6 +203,218 @@ def uploaded_image_to_base64(uploaded_file):
 # ==========================================================
 
 def save_quiz_attempt(user_id, lesson_id, questions, student_answers):
+    total_points = 0
+    obtained_points = 0
+    has_drawing_question = False
+    drawing_was_sent = False
+
+    # Calcular puntaje:
+    # - Alternativas: se califican normalmente.
+    # - Texto abierto: se registra, pero no suma puntaje automático.
+    # - Dibujo: cualquier dibujo enviado vale como correcto.
+    for _, question in questions.iterrows():
+        question_id = int(question["id"])
+        question_type = question["question_type"]
+        points = int(question["points"])
+        answer = student_answers.get(question_id, {})
+
+        if question_type == "multiple_choice":
+            total_points += points
+
+            selected_option = answer.get("selected_option")
+
+            if selected_option == question["correct_option"]:
+                obtained_points += points
+
+        elif question_type == "drawing":
+            total_points += points
+            has_drawing_question = True
+
+            image_base64 = answer.get("image_base64")
+
+            # Si se mandó un dibujo, se acepta como correcto.
+            if image_base64:
+                obtained_points += points
+                drawing_was_sent = True
+
+    # Si no existen preguntas calificables, queda en 0.
+    if total_points > 0:
+        score = round((obtained_points / total_points) * 100, 2)
+    else:
+        score = 0
+
+    # La nota mínima para aprobar es 70%.
+    passed = score >= 70
+
+    conn = None
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # Crear el intento de evaluación
+        cur.execute("""
+            INSERT INTO quiz_attempts (
+                user_id,
+                lesson_id,
+                score,
+                passed
+            )
+            VALUES (%s, %s, %s, %s)
+            RETURNING id;
+        """, (
+            user_id,
+            lesson_id,
+            score,
+            passed
+        ))
+
+        attempt_id = cur.fetchone()[0]
+
+        # Guardar cada respuesta del estudiante
+        for _, question in questions.iterrows():
+            question_id = int(question["id"])
+            question_type = question["question_type"]
+            points = int(question["points"])
+            answer = student_answers.get(question_id, {})
+
+            # Pregunta de alternativas
+            if question_type == "multiple_choice":
+                selected_option = answer.get("selected_option")
+
+                is_correct = (
+                    selected_option == question["correct_option"]
+                )
+
+                points_obtained = points if is_correct else 0
+
+                cur.execute("""
+                    INSERT INTO question_answers (
+                        attempt_id,
+                        question_id,
+                        selected_option,
+                        text_answer,
+                        is_correct,
+                        points_obtained
+                    )
+                    VALUES (%s, %s, %s, NULL, %s, %s);
+                """, (
+                    attempt_id,
+                    question_id,
+                    selected_option,
+                    is_correct,
+                    points_obtained
+                ))
+
+            # Pregunta abierta: queda registrada para el docente
+            elif question_type == "open_text":
+                text_answer = answer.get("text_answer", "")
+
+                cur.execute("""
+                    INSERT INTO question_answers (
+                        attempt_id,
+                        question_id,
+                        selected_option,
+                        text_answer,
+                        is_correct,
+                        points_obtained
+                    )
+                    VALUES (%s, %s, NULL, %s, NULL, 0);
+                """, (
+                    attempt_id,
+                    question_id,
+                    text_answer
+                ))
+
+            # Pregunta de dibujo: cualquier dibujo enviado es correcto
+            elif question_type == "drawing":
+                image_base64 = answer.get("image_base64")
+
+                if image_base64:
+                    cur.execute("""
+                        INSERT INTO drawing_answers (
+                            attempt_id,
+                            question_id,
+                            image_base64,
+                            teacher_feedback,
+                            reviewed,
+                            points_obtained
+                        )
+                        VALUES (%s, %s, %s, %s, TRUE, %s);
+                    """, (
+                        attempt_id,
+                        question_id,
+                        image_base64,
+                        'Dibujo recibido y aceptado automáticamente.',
+                        points
+                    ))
+
+        # Guardar o actualizar el progreso del usuario
+        cur.execute("""
+            INSERT INTO user_progress (
+                user_id,
+                lesson_id,
+                best_score,
+                is_completed,
+                completed_at,
+                updated_at
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END,
+                CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (user_id, lesson_id)
+            DO UPDATE SET
+                best_score = GREATEST(
+                    user_progress.best_score,
+                    EXCLUDED.best_score
+                ),
+                is_completed = (
+                    user_progress.is_completed
+                    OR EXCLUDED.is_completed
+                ),
+                completed_at = CASE
+                    WHEN user_progress.completed_at IS NULL
+                         AND EXCLUDED.is_completed
+                    THEN CURRENT_TIMESTAMP
+                    ELSE user_progress.completed_at
+                END,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (
+            user_id,
+            lesson_id,
+            score,
+            passed,
+            passed
+        ))
+
+        conn.commit()
+
+        return True, {
+            "score": score,
+            "passed": passed,
+            "drawing_was_sent": drawing_was_sent,
+            "message": (
+                "El dibujo fue recibido y aceptado automáticamente."
+                if has_drawing_question and drawing_was_sent
+                else "Evaluación registrada correctamente."
+            )
+        }
+
+    except Exception as error:
+        if conn:
+            conn.rollback()
+
+        return False, f"Error al guardar la evaluación: {error}"
+
+    finally:
+        if conn:
+            conn.close()
+
     auto_gradable_questions = 0
     auto_correct_points = 0
     auto_total_points = 0
@@ -521,9 +733,22 @@ else:
 
                 if st.button("✅ Enviar Respuestas", type="primary", use_container_width=True):
                     success, res = save_quiz_attempt(user["id"], int(lesson["id"]), questions, student_answers)
-                    if success:
-                        st.success(f"¡Evaluación registrada! Puntaje obtenido: {res['score']:.0f}%")
+                   if success:
+                        st.success(
+                            f"¡Evaluación registrada! "
+                            f"Puntaje obtenido: {res['score']:.0f}%"
+                        )
+                    
+                        if res.get("drawing_was_sent"):
+                            st.info("✅ Tu dibujo fue recibido y aceptado como correcto.")
+                    
                         if res["passed"]:
                             st.balloons()
+                            st.success("🎉 ¡Aprobaste la mini lección!")
+                        else:
+                            st.warning(
+                                "Aún no alcanzas el 70%. "
+                                "Puedes volver a intentar el cuestionario."
+                            )
                     else:
                         st.error(res)
