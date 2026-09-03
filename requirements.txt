@@ -4,3 +4,5 @@ pandas
 bcrypt
 reportlab
 openpyxl
+Pillow
+streamlit-drawable-canvas
