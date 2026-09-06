@@ -5,4 +5,4 @@ bcrypt
 reportlab
 openpyxl
 Pillow
-streamlit-drawable-canvas
+streamlit-drawable-canvas-fix==0.9.8
