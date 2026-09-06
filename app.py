@@ -611,7 +611,16 @@ else:
 
             if lesson["content"] and pd.notna(lesson["content"]):
                 st.markdown(lesson["content"])
-
+            if (
+                "image_url" in lesson.index
+                and pd.notna(lesson["image_url"])
+                and str(lesson["image_url"]).strip()
+            ):
+                st.image(
+                    str(lesson["image_url"]).strip(),
+                    caption="Imagen relacionada con la lección",
+                    use_container_width=True
+                )
             st.divider()
             st.subheader("📝 Evaluación interactiva")
 
