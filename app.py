@@ -698,14 +698,13 @@ else:
                             )
 
                             canvas_result = st_canvas(
-                                fill_color="rgba(255, 255, 255, 0.0)",
+                                fill_color="#FFFFFF",
                                 stroke_width=stroke_width,
                                 stroke_color=stroke_color,
                                 background_color="#FFFFFF",
                                 height=350,
                                 width=700,
                                 drawing_mode=drawing_mode,
-                                display_toolbar=True,
                                 update_streamlit=True,
                                 key=f"canvas_{question_id}"
                             )
