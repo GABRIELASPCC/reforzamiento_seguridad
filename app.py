@@ -53,6 +53,7 @@ def get_lessons() -> pd.DataFrame:
                 l.title AS lesson_title,
                 l.content,
                 l.video_url,
+                l.image_url,
                 l.duration_minutes,
                 l.order_index,
                 m.title AS module_title
